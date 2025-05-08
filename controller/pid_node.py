@@ -69,7 +69,31 @@ class PIDcontroller(Node):
         self.max_out = 3
         self.success = deque([True, True, True], maxlen=self.max_out)
 
+        # Variables for handling sign logic
+        self.stop_detected = False
+        self.sign_dist = 0.0
+        self.start_of_stop_time = 0.0
+        self.current_speed = 0.0
+        self.last_target_speed = 0.0
+        self.speed_switch_time = 0.0
+        
+    def calc_speed(self) -> float:
+        w = self.target_speed
+        v = self.last_target_speed
+        r = self.ramp_constant
+        t = time.time() - self.speed_switch_time
+
+        return (v - w) * (1 - np.exp(-r*t).item()) + v
+
     def center_waypoint_callback(self, msg: PoseStamped):
+        # Handle stop sign 
+        if time.time() - self.start_of_stop_time < self.stop_time:
+            ackermann_msg = to_ackermann(0.0, 0.0, timestamp)
+            self.publisher.publish(ackermann_msg)
+            self.last_target_speed = 0.0
+            self.speed_switch_time = time.time()
+            return
+                 
         # Convert incoming pose message to position, heading, and timestamp
         point, heading, timestamp_unix = pose_to_np(msg)
 
@@ -78,6 +102,8 @@ class PIDcontroller(Node):
             ackermann_msg = to_ackermann(0.0, self.last_steering_angle, timestamp_unix)
             self.publisher.publish(ackermann_msg)  # BRAKE
             self.success.append(False)
+            self.last_target_speed = 0.0
+            self.speed_switch_time = time.time()
             return
         else:
             self.success.append(True)
@@ -102,7 +128,7 @@ class PIDcontroller(Node):
         timestamp = msg.header.stamp
 
         # Create an Ackermann drive message with speed and steering angle
-        ackermann_msg = to_ackermann(self.speed, steering_angle, timestamp)
+        ackermann_msg = to_ackermann(self.calc_speed(), steering_angle, timestamp)
 
         # Publish the message to the vehicle
         self.publisher.publish(ackermann_msg)
@@ -114,25 +140,57 @@ class PIDcontroller(Node):
         # to follow the previously estimated path (e.g., maintain the current curve)
         self.last_steering_angle = steering_angle
 
-    def speed_2mph_waypoint_callback(self, msg: PoseStamped):
+    def stop_callback(self, msg: PoseStamped):
         point, heading, timestamp_unix = pose_to_np(msg)
+
+        distance = msg.pose.position.x
+
+        # Handle double stop sign
+        if self.sign_dist < distance:
+            self.stop_detected = False
+            
+        self.sign_dist = distance
 
         if not np.isnan(point).any():
             # If the distance is < 1 meter, update the vehicle speed
-            if distance < 1.0:
+            if distance <= self.sign_distance:
+                self.get_logger().info(f"Stop sign detected at distance {distance:.2f}m. Wait 2 seconds and go.")
+                
+                if not self.stop_detected:
+                    self.start_of_stop_time = time.time()
+                    self.stop_detected = True
+
+
+    def speed_2mph_waypoint_callback(self, msg: PoseStamped):
+        point, heading, timestamp_unix = pose_to_np(msg)
+
+        self.stop_detected = False
+        distance = msg.pose.position.x
+        if not np.isnan(point).any():
+            # If the distance is < 1 meter, update the vehicle speed
+            if distance <= self.sign_distance:
                 self.get_logger().info(f"2mph sign detected at distance {distance:.2f}m.")
-                self.speed = 0.9  # 2 mph in m/s
+                
+                if self.target_speed != self.speed_2mph:
+                    self.last_target_speed = self.target_speed
+                    self.speed_switch_time = time.time()
+                self.target_speed = self.speed_2mph  # 2 mph in m/s
 
     def speed_3mph_waypoint_callback(self, msg: PoseStamped):
         point, heading, timestamp_unix = pose_to_np(msg)
 
+        self.stop_detected = False
+        distance = msg.pose.position.x
         if not np.isnan(point).any():
             # If the distance is < 1 meter, update the vehicle speed
-            if distance < 1.0:
+            if distance <= self.sign_distance:
                 self.get_logger().info(f"3mph sign detected at distance {distance:.2f}m, increasing speed.")
-                self.speed = 1.34  # 3 mph in m/s
 
-
+                if self.target_speed != self.speed_2mph:
+                    self.last_target_speed = self.target_speed
+                    self.speed_switch_time = time.time()
+                self.target_speed = self.speed_3mph # 3 mph in m/s
+   
     def declare_params(self):
 
         # Declare parameters with default values
@@ -141,15 +199,24 @@ class PIDcontroller(Node):
             parameters=[
                 ("kp", 0.9),
                 ("kd", 0.0),
-                ("speed", 0.6),
+                ("speed_2mph", 0.89408),  # [m/s]
+                ("speed_3mph", 1.34112),  # [m/s]
+                ('sign_dist', 1.0),  # [m]
+                ('stop_time', 2.0),
+                ('ramp_constant', 2.0),
             ],
         )
-
+    
     def load_params(self):
         try:
             self.kp = self.get_parameter("kp").get_parameter_value().double_value
             self.kd = self.get_parameter("kd").get_parameter_value().double_value
-            self.speed = self.get_parameter("speed").get_parameter_value().double_value
+            self.speed_2mph = self.get_parameter("speed_2mph").get_parameter_value().double_value
+            self.speed_3mph = self.get_parameter("speed_3mph").get_parameter_value().double_value
+            self.sign_dist = self.get_parameter("sign_dist").get_parameter_value().double_value
+            self.stop_time = self.get_parameter("stop_time").get_parameter_value().double_value
+            self.ramp_constant = self.get_parameter("ramp_constant").get_parameter_value().double_value
+            self.target_speed = self.speed_2mph
 
             if not self.params_set:
                 self.get_logger().info("Parameters loaded successfully")
