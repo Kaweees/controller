@@ -2,30 +2,54 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
 from ackermann_msgs.msg import AckermannDriveStamped, AckermannDrive
-from rclpy.qos import qos_profile_sensor_data  # Quality of Service settings for real-time data
+from rclpy.qos import (
+    qos_profile_sensor_data,
+)  # Quality of Service settings for real-time data
 import time
 from ros2_numpy import pose_to_np, to_ackermann
 from collections import deque
 import numpy as np
 
+
+
 class PIDcontroller(Node):
     def __init__(self):
-        super().__init__('pid_controller')
+        super().__init__("pid_controller")
 
         # Define Quality of Service (QoS) for communication
         qos_profile = qos_profile_sensor_data  # Suitable for sensor data
         qos_profile.depth = 1  # Keep only the latest message
 
         # Create a publisher for sending AckermannDriveStamped messages to the '/autonomous/ackermann_cmd' topic
-        self.publisher = self.create_publisher(AckermannDriveStamped, '/autonomous/ackermann_cmd', qos_profile)
+        self.publisher = self.create_publisher(
+            AckermannDriveStamped, "/autonomous/ackermann_cmd", qos_profile
+        )
 
         # Create a subscription to listen for PoseStamped messages from the '/waypoint' topic
         # When a message is received, the 'self.waypoint_callback' function is called
-        self.subscription = self.create_subscription(
+        self.center_subscriber = self.create_subscription(
+            PoseStamped, "/center/waypoint", self.center_waypoint_callback, qos_profile
+        )
+
+        self.stop_subscriber = self.create_subscription(
             PoseStamped,
-            '/waypoint',
-            self.waypoint_callback,
-            qos_profile
+            "/stop/waypoint",
+            self.center_line_waypoint_callback,
+            qos_profile,
+        )
+
+        self.speed_2mph_sign_subscriber = self.create_subscription(
+            PoseStamped,
+            "/speed_2mph/waypoint",
+            self.speed_2mph_waypoint_callback,
+            qos_profile,
+        )
+
+        self.speed_3mph_subscriber = self.create_subscription(
+            PoseStamped,
+            "/speed_3mph/waypoint",
+            self.speed_3mph_waypoint_callback,
+            qos_profile,
         )
 
         # Load parameters
@@ -45,20 +69,18 @@ class PIDcontroller(Node):
         self.max_out = 3
         self.success = deque([True, True, True], maxlen=self.max_out)
 
-    def waypoint_callback(self, msg: PoseStamped):
-
+    def center_waypoint_callback(self, msg: PoseStamped):
         # Convert incoming pose message to position, heading, and timestamp
         point, heading, timestamp_unix = pose_to_np(msg)
 
         # If the detected point contains NaN (tracking lost) stop the vehicle
         if np.isnan(point).any():
             ackermann_msg = to_ackermann(0.0, self.last_steering_angle, timestamp_unix)
-            self.publisher.publish(ackermann_msg) # BRAKE
+            self.publisher.publish(ackermann_msg)  # BRAKE
             self.success.append(False)
             return
         else:
             self.success.append(True)
-
 
         # Calculate time difference since last callback
         dt = timestamp_unix - self.last_time
@@ -71,7 +93,7 @@ class PIDcontroller(Node):
         error = 0.0 - y  # Assuming the goal is to stay centered at y = 0
 
         # Calculate the derivative of the error (change in error over time)
-        d_error = (error - self.last_error) / dt 
+        d_error = (error - self.last_error) / dt
 
         # Compute the steering angle using a PD controller
         steering_angle = (self.kp * error) + (self.kd * d_error)
@@ -92,24 +114,42 @@ class PIDcontroller(Node):
         # to follow the previously estimated path (e.g., maintain the current curve)
         self.last_steering_angle = steering_angle
 
+    def speed_2mph_waypoint_callback(self, msg: PoseStamped):
+        point, heading, timestamp_unix = pose_to_np(msg)
+
+        if not np.isnan(point).any():
+            # If the distance is < 1 meter, update the vehicle speed
+            if distance < 1.0:
+                self.get_logger().info(f"2mph sign detected at distance {distance:.2f}m.")
+                self.speed = 0.9  # 2 mph in m/s
+
+    def speed_3mph_waypoint_callback(self, msg: PoseStamped):
+        point, heading, timestamp_unix = pose_to_np(msg)
+
+        if not np.isnan(point).any():
+            # If the distance is < 1 meter, update the vehicle speed
+            if distance < 1.0:
+                self.get_logger().info(f"3mph sign detected at distance {distance:.2f}m, increasing speed.")
+                self.speed = 1.34  # 3 mph in m/s
+
 
     def declare_params(self):
 
         # Declare parameters with default values
         self.declare_parameters(
-            namespace='',
+            namespace="",
             parameters=[
-                ('kp', 0.9),
-                ('kd', 0.0),
-                ('speed', 0.6),
-            ]
+                ("kp", 0.9),
+                ("kd", 0.0),
+                ("speed", 0.6),
+            ],
         )
 
     def load_params(self):
         try:
-            self.kp = self.get_parameter('kp').get_parameter_value().double_value
-            self.kd = self.get_parameter('kd').get_parameter_value().double_value
-            self.speed = self.get_parameter('speed').get_parameter_value().double_value
+            self.kp = self.get_parameter("kp").get_parameter_value().double_value
+            self.kd = self.get_parameter("kd").get_parameter_value().double_value
+            self.speed = self.get_parameter("speed").get_parameter_value().double_value
 
             if not self.params_set:
                 self.get_logger().info("Parameters loaded successfully")
@@ -117,6 +157,7 @@ class PIDcontroller(Node):
 
         except Exception as e:
             self.get_logger().error(f"Failed to load parameters: {e}")
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -127,5 +168,6 @@ def main(args=None):
     node.destroy_node()
     rclpy.shutdown()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
