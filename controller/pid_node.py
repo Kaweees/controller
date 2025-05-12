@@ -10,10 +10,12 @@ from ros2_numpy import pose_to_np, to_ackermann
 from collections import deque
 import numpy as np
 
+from ultralytics import YOLO
+from ament_index_python.packages import get_package_share_directory, get_package_prefix
 
 
 class PIDcontroller(Node):
-    def __init__(self):
+    def __init__(self, model_path: str):
         super().__init__("pid_controller")
 
         # Define Quality of Service (QoS) for communication
@@ -68,6 +70,29 @@ class PIDcontroller(Node):
         # This could be useful to allow the vehicle to temporarily lose the track for up to max_out frames before deciding to stop. (Currently not used yet.)
         self.max_out = 3
         self.success = deque([True, True, True], maxlen=self.max_out)
+        # Load the custom trained YOLO model
+        self.model = self.load_model(model_path)
+
+        # Map class IDs to labels and labels to IDs
+        self.id2label = self.model.names
+        targets = ["stop", "speed_3mph", "speed_2mph"]
+        self.id2target = {
+            id: lbl for id, lbl in self.id2label.items() if lbl in targets
+        }
+    def load_model(self, filepath):
+        model = YOLO(filepath)
+
+        self.imgsz = model.args[
+            "imgsz"
+        ]  # Get the image size (imgsz) the loaded model was trained on.
+
+        # Init model
+        print("Initializing the model with a dummy input...")
+        im = np.zeros((self.imgsz, self.imgsz, 3))  # dummy image
+        _ = model.predict(im)
+        print("Model initialization complete.")
+
+        return model
 
         # Variables for handling sign logic
         self.stop_detected = False
@@ -229,7 +254,11 @@ class PIDcontroller(Node):
 def main(args=None):
     rclpy.init(args=args)
 
-    node = PIDcontroller()
+    # Path to your custom trained YOLO model
+    pkg_path = get_package_prefix("line_follower").replace("install", "src")
+    model_path = pkg_path + "/models/best.pt"
+
+    node = PIDcontroller(model_path=model_path)
     rclpy.spin(node)
 
     node.destroy_node()
