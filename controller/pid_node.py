@@ -2,57 +2,28 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
 from ackermann_msgs.msg import AckermannDriveStamped, AckermannDrive
-from rclpy.qos import (
-    qos_profile_sensor_data,
-)  # Quality of Service settings for real-time data
+from rclpy.qos import qos_profile_sensor_data  # Quality of Service settings for real-time data
 import time
 from ros2_numpy import pose_to_np, to_ackermann
 from collections import deque
 import numpy as np
-
-from ultralytics import YOLO
-from ament_index_python.packages import get_package_share_directory, get_package_prefix
-
+import time
 
 class PIDcontroller(Node):
-    def __init__(self, model_path: str):
-        super().__init__("pid_controller")
+    def __init__(self):
+        super().__init__('pid_controller')
 
         # Define Quality of Service (QoS) for communication
         qos_profile = qos_profile_sensor_data  # Suitable for sensor data
         qos_profile.depth = 1  # Keep only the latest message
 
         # Create a publisher for sending AckermannDriveStamped messages to the '/autonomous/ackermann_cmd' topic
-        self.publisher = self.create_publisher(
-            AckermannDriveStamped, "/autonomous/ackermann_cmd", qos_profile
-        )
+        self.publisher = self.create_publisher(AckermannDriveStamped, '/autonomous/ackermann_cmd', qos_profile)
 
         # Create a subscription to listen for PoseStamped messages from the '/waypoint' topic
         # When a message is received, the 'self.waypoint_callback' function is called
-        self.center_subscriber = self.create_subscription(
-            PoseStamped, "/center/waypoint", self.center_waypoint_callback, qos_profile
-        )
-
-        self.stop_subscriber = self.create_subscription(
-            PoseStamped,
-            "/stop/waypoint",
-            self.center_line_waypoint_callback,
-            qos_profile,
-        )
-
-        self.speed_2mph_sign_subscriber = self.create_subscription(
-            PoseStamped,
-            "/speed_2mph/waypoint",
-            self.speed_2mph_waypoint_callback,
-            qos_profile,
-        )
-
-        self.speed_3mph_subscriber = self.create_subscription(
-            PoseStamped,
-            "/speed_3mph/waypoint",
-            self.speed_3mph_waypoint_callback,
-            qos_profile,
-        )
+        self.way_sub = self.create_subscription(PoseStamped,'/waypoint', self.waypoint_callback, qos_profile)
+        self.obj_sub = self.create_subscription(PoseStamped,'/object', self.obj_callback, qos_profile)
 
         # Load parameters
         self.params_set = False
@@ -72,69 +43,119 @@ class PIDcontroller(Node):
         self.success = deque([True] * self.max_out, maxlen=self.max_out)
 
         self.len_history = 10
+        self.id2target = {1: 'stop'}
 
-        # Load the custom trained YOLO model
-        self.model = self.load_model(model_path)
-
-        # Map class IDs to labels and labels to IDs
-        self.id2label = self.model.names
-        targets = ["stop", "speed_3mph", "speed_2mph"]
-        self.id2target = {
-            id: lbl for id, lbl in self.id2label.items() if lbl in targets
+        # Initialize target metadata for each label (e.g. stop sign, speed signs)
+        self.targets = {
+            lbl: {
+                'id': id,  # Numerical class ID
+                'history': deque([False] * self.len_history, maxlen=self.len_history),  # Detection history
+                'detected': False,   # Whether the target is currently detected
+                'reacted': False,    # Whether the vehicle has already reacted
+                'threshold': 0.5,    # Detection threshold
+                'distance': 0.0,     # Current distance to the target
+                'min_distance': 2.0  # Distance threshold to start reacting
+            }
+            for id, lbl in self.id2target.items()
         }
-    def load_model(self, filepath):
-        model = YOLO(filepath)
 
-        self.imgsz = model.args[
-            "imgsz"
-        ]  # Get the image size (imgsz) the loaded model was trained on.
 
-        # Init model
-        print("Initializing the model with a dummy input...")
-        im = np.zeros((self.imgsz, self.imgsz, 3))  # dummy image
-        _ = model.predict(im)
-        print("Model initialization complete.")
+    def stop_and_wait(self, target, duration=2.0):
+        # Update detection flag based on average detection history
+        target['detected'] = True if np.mean(target['history']) > target['threshold'] else False
 
-        return model
+        # Only stop if target is detected, not yet reacted, and close enough
+        if target['detected'] and not target['reacted']:
+            if target['distance'] < target['min_distance']:
+                ackermann_msg = to_ackermann(0.0, self.last_steering_angle)
+                self.publisher.publish(ackermann_msg)  # BRAKE
+                time.sleep(duration)  # Wait for a specified duration
+                target['reacted'] = True  # Mark target as handled
 
-        # Variables for handling sign logic
-        self.stop_detected = False
-        self.sign_dist = 0.0
-        self.start_of_stop_time = 0.0
-        self.current_speed = 0.0
-        self.last_target_speed = 0.0
-        self.speed_switch_time = 0.0
+        if not any(target['history']) and target['reacted']:
+            target['reacted'] = False  # Reset reaction flag if the target hasn't been detected in any recent frames
+    
+
+    def set_speed_2(self, target):
+        # Update detection flag based on average detection history
+        target['detected'] = True if np.mean(target['history']) > target['threshold'] else False
+
+        # Only stop if target is detected, not yet reacted, and close enough
+        if target['detected'] and not target['reacted']:
+            if target['distance'] < target['min_distance']:
+                self.speed = 2 # set the speed, conversion first?
+                ackermann_msg = to_ackermann(self.speed, self.last_steering_angle)
+                self.publisher.publish(ackermann_msg)  # Move to Speed 2
+                target['reacted'] = True  # Mark target as handled
+
+        if not any(target['history']) and target['reacted']:
+            target['reacted'] = False  # Reset reaction flag if the target hasn't been detected in any recent frames
+    
+    
+    def set_speed_3(self, target):
+        # Update detection flag based on average detection history
+        target['detected'] = True if np.mean(target['history']) > target['threshold'] else False
+
+        # Only stop if target is detected, not yet reacted, and close enough
+        if target['detected'] and not target['reacted']:
+            if target['distance'] < target['min_distance']:
+                self.speed = 3 # set the speed, conversion first?
+                ackermann_msg = to_ackermann(self.speed, self.last_steering_angle)
+                self.publisher.publish(ackermann_msg)  # Move to Speed 3
+                target['reacted'] = True  # Mark target as handled
+
+        if not any(target['history']) and target['reacted']:
+            target['reacted'] = False  # Reset reaction flag if the target hasn't been detected in any recent frames
+
+
+    def obj_callback(self, msg: PoseStamped):
+
+        # Convert incoming pose message to position, heading, and timestamp
+        point, heading, timestamp_unix = pose_to_np(msg)
+
+        id = int(point[-1]) # Extract class ID stored in the z-coordinate
+        x, _ = point[:2] # Get distance
+        lbl = self.id2target[id]
+        data = self.targets[lbl]
+
         
-    def calc_speed(self) -> float:
-        w = self.target_speed
-        v = self.last_target_speed
-        r = self.ramp_constant
-        t = time.time() - self.speed_switch_time
+        # Check if point is NaN (object not detected or not visible)
+        if np.isnan(point).any():
+            data['history'].append(False)
+        else:
+            data['history'].append(True)
+            data['distance'] = x
 
-        return (v - w) * (1 - np.exp(-r * t).item()) + v
+        # Handle the detected objects 
+        if lbl == 'stop':
+            # Handle the stop sign object 
+            self.stop_and_wait(data)
+        elif lbl == 'speed_2mph':
+            # Handle the 2mph speed limit object
+            self.set_speed_2(data)
+        elif lbl == 'speed_3mph':
+            # Handle the 3mph speed limit object 
+            self.set_speed_3(data)
+
 
     def waypoint_callback(self, msg: PoseStamped):
-        # Handle stop sign
-        if time.time() - self.start_of_stop_time < self.stop_time:
-            ackermann_msg = to_ackermann(0.0, 0.0, timestamp)
-            self.publisher.publish(ackermann_msg)
-            self.last_target_speed = 0.0
-            self.speed_switch_time = time.time()
-            return
-                 
+
         # Convert incoming pose message to position, heading, and timestamp
         point, heading, timestamp_unix = pose_to_np(msg)
 
         # If the detected point contains NaN (tracking lost) stop the vehicle
         if np.isnan(point).any():
-            ackermann_msg = to_ackermann(0.0, self.last_steering_angle, timestamp_unix)
-            self.publisher.publish(ackermann_msg)  # BRAKE
             self.success.append(False)
-            self.last_target_speed = 0.0
-            self.speed_switch_time = time.time()
+            if any(self.success):
+                # Keep driving with the last known steering angle unless the line is lost for self.max_out consecutive frames
+                ackermann_msg = to_ackermann(self.speed, self.last_steering_angle, timestamp_unix)
+            else:
+                ackermann_msg = to_ackermann(0.0, self.last_steering_angle, timestamp_unix)
+                self.publisher.publish(ackermann_msg) # BRAKE
             return
         else:
             self.success.append(True)
+
 
         # Calculate time difference since last callback
         dt = timestamp_unix - self.last_time
@@ -147,7 +168,7 @@ class PIDcontroller(Node):
         error = 0.0 - y  # Assuming the goal is to stay centered at y = 0
 
         # Calculate the derivative of the error (change in error over time)
-        d_error = (error - self.last_error) / dt
+        d_error = (error - self.last_error) / dt 
 
         # Compute the steering angle using a PD controller
         steering_angle = (self.kp * error) + (self.kd * d_error)
@@ -156,7 +177,7 @@ class PIDcontroller(Node):
         timestamp = msg.header.stamp
 
         # Create an Ackermann drive message with speed and steering angle
-        ackermann_msg = to_ackermann(self.calc_speed(), steering_angle, timestamp)
+        ackermann_msg = to_ackermann(self.speed, steering_angle, timestamp)
 
         # Publish the message to the vehicle
         self.publisher.publish(ackermann_msg)
@@ -168,102 +189,24 @@ class PIDcontroller(Node):
         # to follow the previously estimated path (e.g., maintain the current curve)
         self.last_steering_angle = steering_angle
 
-    def stop_callback(self, msg: PoseStamped):
-        point, heading, timestamp_unix = pose_to_np(msg)
-
-        distance = msg.pose.position.x
-
-        # Handle double stop sign
-        if self.sign_dist < distance:
-            self.stop_detected = False
-
-        self.sign_dist = distance
-
-        if not np.isnan(point).any():
-            # If the distance is < 1 meter, update the vehicle speed
-            if distance <= self.sign_distance:
-                self.get_logger().info(f"Stop sign detected at distance {distance:.2f}m. Wait 2 seconds and go.")
-                
-                if not self.stop_detected:
-                    self.start_of_stop_time = time.time()
-                    self.stop_detected = True
-
-
-    def speed_2mph_waypoint_callback(self, msg: PoseStamped):
-        point, heading, timestamp_unix = pose_to_np(msg)
-
-        self.stop_detected = False
-        distance = msg.pose.position.x
-        if not np.isnan(point).any():
-            # If the distance is < 1 meter, update the vehicle speed
-            if distance <= self.sign_distance:
-                self.get_logger().info(
-                    f"2mph sign detected at distance {distance:.2f}m."
-                )
-
-                if self.target_speed != self.speed_2mph:
-                    self.last_target_speed = self.target_speed
-                    self.speed_switch_time = time.time()
-                self.target_speed = self.speed_2mph  # 2 mph in m/s
-
-    def speed_3mph_waypoint_callback(self, msg: PoseStamped):
-        point, heading, timestamp_unix = pose_to_np(msg)
-
-        self.stop_detected = False
-        distance = msg.pose.position.x
-        if not np.isnan(point).any():
-            # If the distance is < 1 meter, update the vehicle speed
-            if distance <= self.sign_distance:
-                self.get_logger().info(
-                    f"3mph sign detected at distance {distance:.2f}m, increasing speed."
-                )
-
-                if self.target_speed != self.speed_2mph:
-                    self.last_target_speed = self.target_speed
-                    self.speed_switch_time = time.time()
-                self.target_speed = self.speed_3mph  # 3 mph in m/s
 
     def declare_params(self):
 
         # Declare parameters with default values
         self.declare_parameters(
-            namespace="",
+            namespace='',
             parameters=[
-                ("kp", 0.9),
-                ("kd", 0.0),
-                ("speed_2mph", 0.89408),  # [m/s]
-                ("speed_3mph", 1.34112),  # [m/s]
-                ("sign_dist", 1.0),  # [m]
-                ("stop_time", 2.0),
-                ("ramp_constant", 2.0),
-            ],
+                ('kp', 0.9),
+                ('kd', 0.0),
+                ('speed', 0.6),
+            ]
         )
 
     def load_params(self):
         try:
-            self.kp = self.get_parameter("kp").get_parameter_value().double_value
-            self.kd = self.get_parameter("kd").get_parameter_value().double_value
-            self.speed_2mph = self.get_parameter("speed_2mph").get_parameter_value().double_value
-            self.speed_3mph = self.get_parameter("speed_3mph").get_parameter_value().double_value
-            self.sign_dist = self.get_parameter("sign_dist").get_parameter_value().double_value
-            self.stop_time = self.get_parameter("stop_time").get_parameter_value().double_value
-            self.ramp_constant = self.get_parameter("ramp_constant").get_parameter_value().double_value
-            self.speed_2mph = (
-                self.get_parameter("speed_2mph").get_parameter_value().double_value
-            )
-            self.speed_3mph = (
-                self.get_parameter("speed_3mph").get_parameter_value().double_value
-            )
-            self.sign_dist = (
-                self.get_parameter("sign_dist").get_parameter_value().double_value
-            )
-            self.stop_time = (
-                self.get_parameter("stop_time").get_parameter_value().double_value
-            )
-            self.ramp_constant = (
-                self.get_parameter("ramp_constant").get_parameter_value().double_value
-            )
-            self.target_speed = self.speed_2mph
+            self.kp = self.get_parameter('kp').get_parameter_value().double_value
+            self.kd = self.get_parameter('kd').get_parameter_value().double_value
+            self.speed = self.get_parameter('speed').get_parameter_value().double_value
 
             if not self.params_set:
                 self.get_logger().info("Parameters loaded successfully")
@@ -272,20 +215,14 @@ class PIDcontroller(Node):
         except Exception as e:
             self.get_logger().error(f"Failed to load parameters: {e}")
 
-
 def main(args=None):
     rclpy.init(args=args)
 
-    # Path to your custom trained YOLO model
-    pkg_path = get_package_prefix("line_follower").replace("install", "src")
-    model_path = pkg_path + "/models/best.pt"
-
-    node = PIDcontroller(model_path=model_path)
+    node = PIDcontroller()
     rclpy.spin(node)
 
     node.destroy_node()
     rclpy.shutdown()
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
