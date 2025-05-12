@@ -68,8 +68,11 @@ class PIDcontroller(Node):
 
         # Initialize deque with a fixed length of self.max_out
         # This could be useful to allow the vehicle to temporarily lose the track for up to max_out frames before deciding to stop. (Currently not used yet.)
-        self.max_out = 3
-        self.success = deque([True, True, True], maxlen=self.max_out)
+        self.max_out = 9
+        self.success = deque([True] * self.max_out, maxlen=self.max_out)
+
+        self.len_history = 10
+
         # Load the custom trained YOLO model
         self.model = self.load_model(model_path)
 
@@ -108,10 +111,10 @@ class PIDcontroller(Node):
         r = self.ramp_constant
         t = time.time() - self.speed_switch_time
 
-        return (v - w) * (1 - np.exp(-r*t).item()) + v
+        return (v - w) * (1 - np.exp(-r * t).item()) + v
 
-    def center_waypoint_callback(self, msg: PoseStamped):
-        # Handle stop sign 
+    def waypoint_callback(self, msg: PoseStamped):
+        # Handle stop sign
         if time.time() - self.start_of_stop_time < self.stop_time:
             ackermann_msg = to_ackermann(0.0, 0.0, timestamp)
             self.publisher.publish(ackermann_msg)
@@ -173,7 +176,7 @@ class PIDcontroller(Node):
         # Handle double stop sign
         if self.sign_dist < distance:
             self.stop_detected = False
-            
+
         self.sign_dist = distance
 
         if not np.isnan(point).any():
@@ -194,8 +197,10 @@ class PIDcontroller(Node):
         if not np.isnan(point).any():
             # If the distance is < 1 meter, update the vehicle speed
             if distance <= self.sign_distance:
-                self.get_logger().info(f"2mph sign detected at distance {distance:.2f}m.")
-                
+                self.get_logger().info(
+                    f"2mph sign detected at distance {distance:.2f}m."
+                )
+
                 if self.target_speed != self.speed_2mph:
                     self.last_target_speed = self.target_speed
                     self.speed_switch_time = time.time()
@@ -209,13 +214,15 @@ class PIDcontroller(Node):
         if not np.isnan(point).any():
             # If the distance is < 1 meter, update the vehicle speed
             if distance <= self.sign_distance:
-                self.get_logger().info(f"3mph sign detected at distance {distance:.2f}m, increasing speed.")
+                self.get_logger().info(
+                    f"3mph sign detected at distance {distance:.2f}m, increasing speed."
+                )
 
                 if self.target_speed != self.speed_2mph:
                     self.last_target_speed = self.target_speed
                     self.speed_switch_time = time.time()
-                self.target_speed = self.speed_3mph # 3 mph in m/s
-   
+                self.target_speed = self.speed_3mph  # 3 mph in m/s
+
     def declare_params(self):
 
         # Declare parameters with default values
@@ -226,12 +233,12 @@ class PIDcontroller(Node):
                 ("kd", 0.0),
                 ("speed_2mph", 0.89408),  # [m/s]
                 ("speed_3mph", 1.34112),  # [m/s]
-                ('sign_dist', 1.0),  # [m]
-                ('stop_time', 2.0),
-                ('ramp_constant', 2.0),
+                ("sign_dist", 1.0),  # [m]
+                ("stop_time", 2.0),
+                ("ramp_constant", 2.0),
             ],
         )
-    
+
     def load_params(self):
         try:
             self.kp = self.get_parameter("kp").get_parameter_value().double_value
@@ -241,6 +248,21 @@ class PIDcontroller(Node):
             self.sign_dist = self.get_parameter("sign_dist").get_parameter_value().double_value
             self.stop_time = self.get_parameter("stop_time").get_parameter_value().double_value
             self.ramp_constant = self.get_parameter("ramp_constant").get_parameter_value().double_value
+            self.speed_2mph = (
+                self.get_parameter("speed_2mph").get_parameter_value().double_value
+            )
+            self.speed_3mph = (
+                self.get_parameter("speed_3mph").get_parameter_value().double_value
+            )
+            self.sign_dist = (
+                self.get_parameter("sign_dist").get_parameter_value().double_value
+            )
+            self.stop_time = (
+                self.get_parameter("stop_time").get_parameter_value().double_value
+            )
+            self.ramp_constant = (
+                self.get_parameter("ramp_constant").get_parameter_value().double_value
+            )
             self.target_speed = self.speed_2mph
 
             if not self.params_set:
