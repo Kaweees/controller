@@ -3,7 +3,8 @@ import os
 import time
 from collections import deque
 import numpy as np
-from ultralytics import YOLO
+# from ultralytics import YOLO
+from yolo_onnx_runner import YOLO
 from ament_index_python.packages import get_package_share_directory, get_package_prefix
 
 # ROS Imports
