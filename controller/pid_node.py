@@ -8,9 +8,11 @@ from ros2_numpy import pose_to_np, to_ackermann
 from collections import deque
 import numpy as np
 import time
+from ultralytics import YOLO
+from ament_index_python.packages import get_package_share_directory, get_package_prefix
 
 class PIDcontroller(Node):
-    def __init__(self):
+    def __init__(self, model_path):
         super().__init__('pid_controller')
 
         # Define Quality of Service (QoS) for communication
@@ -43,7 +45,14 @@ class PIDcontroller(Node):
         self.success = deque([True] * self.max_out, maxlen=self.max_out)
 
         self.len_history = 10
-        self.id2target = {1: 'stop'}
+        # self.id2target = {1: 'stop'}
+
+        # Load the model
+        model = YOLO(model_path)
+        # Get class IDs from model
+        id2label = model.names
+        targets = ['stop', 'speed_2mph', 'speed_3mph']
+        self.id2target = {id: lbl for id, lbl in id2label.items() if lbl in targets}
 
         # Initialize target metadata for each label (e.g. stop sign, speed signs)
         self.targets = {
@@ -218,7 +227,11 @@ class PIDcontroller(Node):
 def main(args=None):
     rclpy.init(args=args)
 
-    node = PIDcontroller()
+    # Path to your custom trained YOLO model
+    pkg_path = get_package_prefix('line_follower').replace('install', 'src') # /mxck2_ws/install/line_follower → /mxck2_ws/src/line_follower
+    model_path = pkg_path + '/models/best.pt'
+    
+    node = PIDcontroller(model_path)
     rclpy.spin(node)
 
     node.destroy_node()
