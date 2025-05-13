@@ -40,20 +40,20 @@ class PIDcontroller(Node):
 
         # Create a subscription to listen for PoseStamped messages from the '/waypoint' topic
         # When a message is received, the 'self.waypoint_callback' function is called
-        self.way_sub = self.create_subscription(PoseStamped,'/waypoint', self.waypoint_callback, qos_profile)
+        self.way_sub = self.create_subscription(PoseStamped,'waypoint', self.waypoint_callback, qos_profile)
         # Create a subscription to listen for PoseStamped messages from the '/object' topic
-        self.obj_sub = self.create_subscription(PoseStamped,'/object', self.obj_callback, qos_profile)
+        self.obj_sub = self.create_subscription(PoseStamped,'object', self.obj_callback, qos_profile)
 
         # Create a publisher for sending AckermannDriveStamped messages to the '/autonomous/ackermann_cmd' topic
-        self.ack_cmd_publisher = self.create_publisher(AckermannDriveStamped, '/autonomous/ackermann_cmd', qos_profile)
+        self.ack_cmd_publisher = self.create_publisher(AckermannDriveStamped, 'autonomous/ackermann_cmd', qos_profile)
 
         # Load parameters
         self.params_set = False
         self.declare_params()
         self.load_params()
 
-        # Create a timer that calls self.load_params every 10 seconds (10.0 seconds)
-        self.timer = self.create_timer(10.0, self.load_params)
+        # # Create a timer that calls self.load_params every 10 seconds (10.0 seconds)
+        # self.timer = self.create_timer(10.0, self.load_params)
 
         # Initialize 'previous' values for the lost line case
         self.last_error = 0.0
