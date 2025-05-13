@@ -71,11 +71,11 @@ class PIDcontroller(Node):
         # Map class IDs to labels and labels to IDs
         id2label = model.names
         targets = ['stop', 'speed_3mph', 'speed_2mph']
-        self.center_line_id: list[int] = [id_ for id_, lbl in self.id2label.items() if lbl == 'center']
+        self.center_line_id: list[int] = [id_ for id_, lbl in id2label.items() if lbl == 'center']
         self.id2target = {id: lbl for id, lbl in id2label.items() if lbl in targets}
 
         # Length of history for objects detected
-        self.len_history = 10
+        self.len_history = 5#10
         # Initialize target metadata for each label (e.g. stop sign, speed signs)
         self.targets = {
             lbl: {
@@ -83,7 +83,7 @@ class PIDcontroller(Node):
                 'history': deque([False] * self.len_history, maxlen=self.len_history),  # Detection history
                 'detected': False,   # Whether the target is currently detected
                 'reacted': False,    # Whether the vehicle has already reacted
-                'threshold': 0.5,    # Detection threshold (percent of history with positive detection)
+                'threshold': 0.49,    # Detection threshold (percent of history with positive detection)
                 'distance': 0.0,     # Current distance to the target
                 'min_distance': 2.0  # Distance threshold to start reacting
             }
@@ -285,7 +285,8 @@ def main(args=None):
     # Path to your custom trained YOLO model
     # /mxck2_ws/install/line_follower → /mxck2_ws/src/line_follower
     pkg_path = get_package_prefix('line_follower').replace('install', 'src') 
-    model_path = pkg_path + '/models/best.pt'
+    # model_path = pkg_path + '/models/best.pt'
+    model_path = pkg_path + '/models/best.onnx'
 
     rclpy.init(args=args)
     node = PIDcontroller(model_path)
