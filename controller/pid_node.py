@@ -63,9 +63,11 @@ class StopSign(Target):
             node.get_logger().info(f'target={self.label}, reacting at distance = {self.position[0]:.2f}')
         else:
             node.get_logger().info(f'target={self.label}, no good distance')
+        node.about_to_stop = True
         msg = to_ackermann(0.0, node.last_steering_angle)
         node.publisher.publish(msg)
         time.sleep(self.duration)
+        node.about_to_stop = False
         node.get_logger().info(f"Resume driving...")
         return True
 
@@ -133,8 +135,6 @@ class PIDcontroller(Node):
     def __init__(self, model_path):
         super().__init__("pid_controller")
 
-        self.stopped = False
-
         # Ensure input model path exists
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"The file at '{model_path}' was not found.")
@@ -169,6 +169,9 @@ class PIDcontroller(Node):
         self.last_error = 0.0
         self.last_time = time.time()
         self.last_steering_angle = 0.0
+        # synchronization 'lock' for stop sign detection - only should be modified by StopSign().react()
+        # should be read by PIDController() to check if should stop
+        self.about_to_stop = False 
 
         # Initialize deque with a fixed length of self.max_out
         # This could be useful to allow the vehicle to temporarily lose the track for up to max_out frames before deciding to stop. (Currently not used yet.)
@@ -236,6 +239,9 @@ class PIDcontroller(Node):
                 # TRYING THIS CHANGE - I like this bc keeps previous speed limit info (and there are a lot of lost lines)
                 # Keep driving with the last known steering angle unless the line is lost for self.max_out consecutive frames
                 ackermann_msg = to_ackermann(self.speed, self.last_steering_angle, timestamp_unix)
+                # Check for reaction to stop sign, prevents publishing ackermann command with speed > 0 during a stop
+                if self.about_to_stop:
+                    return
                 self.publisher.publish(ackermann_msg) # keep same speed (and steering)
                 self.get_logger().info("in waypoint_callback, keep driving with last known info")  # print debugging
 
@@ -278,6 +284,9 @@ class PIDcontroller(Node):
         ackermann_msg = to_ackermann(self.speed, steering_angle, timestamp)
 
         # Publish the message to the vehicle
+        # Check for reaction to stop sign, prevents publishing ackermann command with speed > 0 during a stop
+        if self.about_to_stop:
+            return
         self.publisher.publish(ackermann_msg)
 
         # Save the current error for use in the next iteration
