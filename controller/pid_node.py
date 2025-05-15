@@ -240,8 +240,8 @@ class PIDcontroller(Node):
                 # Keep driving with the last known steering angle unless the line is lost for self.max_out consecutive frames
                 ackermann_msg = to_ackermann(self.speed, self.last_steering_angle, timestamp_unix)
                 # Check for reaction to stop sign, prevents publishing ackermann command with speed > 0 during a stop
-                if self.about_to_stop:
-                    return
+                # if self.about_to_stop:
+                    # return
                 self.publisher.publish(ackermann_msg) # keep same speed (and steering)
                 self.get_logger().info("in waypoint_callback, keep driving with last known info")  # print debugging
 
@@ -285,8 +285,8 @@ class PIDcontroller(Node):
 
         # Publish the message to the vehicle
         # Check for reaction to stop sign, prevents publishing ackermann command with speed > 0 during a stop
-        if self.about_to_stop:
-            return
+        # if self.about_to_stop:
+            # return
         self.publisher.publish(ackermann_msg)
 
         # Save the current error for use in the next iteration
