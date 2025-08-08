@@ -12,7 +12,7 @@ from collections import deque
 import numpy as np
 import time
 from controller.targets import Target
-from ament_index_python.packages import get_package_share_directory, get_package_prefix
+from ament_index_python.packages import get_package_prefix
 from ultralytics import YOLO
 
 
@@ -93,6 +93,38 @@ class SpeedSign(Target):
         # Assuming this is consumed somewhere else in your control loop
         node.speed = self.speed
         return True
+
+    def update(self, position, node):
+        self.position = position
+
+        # Update detection history based on current observation
+        if np.isnan(position).any():
+            # Object NOT detected this frame
+            self.history.append(False)
+        else:
+            # Object IS detected this frame
+            self.history.append(True)
+
+        # Trigger action if target is visible and in range and not yet reacted
+        if self.visible and not self.has_reacted:
+            node.speed = node.min_speed
+
+            # node.get_logger().info(f"target={self.label}, in update (target visible and not reacted)")  # print debugging
+            if self.in_range:
+                node.get_logger().info(f"target={self.label}, in update (IS in_range, about to react), pos={self.position}")  # print debugging
+                self.has_reacted = self.react(node)  # Pass node here
+            else:
+                try:
+                    node.get_logger().info(f'target={self.label}, in update (NOT in range yet at pos={self.position})') # print debugging
+                except:
+                    node.get_logger().info(f'target={self.label}, in update (NOT in range yet, BAD distance)') # print debugging
+                
+        # Reset if target is no longer visible
+        elif not any(self.history) and self.has_reacted:
+            node.get_logger().info(f"target={self.label}, in update, RESET react (ready for another detection)")  # print debugging
+            self.has_reacted = False
+
+
 
     def __repr__(self):
         return f"<SpeedSign with speed={self.speed}, id={self.id}, label={self.label}>"
@@ -197,8 +229,8 @@ class PIDcontroller(Node):
         label2class = {
             "car": Vehicle(label2id["car"], "car"),
             "stop": StopSign(label2id["stop"], "stop", min_distance=3.0, duration=3.0), #approximately 1m in real world for stop sign
-            "speed_2mph": SpeedSign(label2id["speed_2mph"], "speed_2mph", len_history=1, min_distance=3.0, speed=0.6),
-            "speed_3mph": SpeedSign(label2id["speed_3mph"], "speed_3mph", len_history=1, min_distance=3.0, speed=0.8),
+            "speed_2mph": SpeedSign(label2id["speed_2mph"], "speed_2mph", len_history=5, min_distance=3.0, speed=0.6),
+            "speed_3mph": SpeedSign(label2id["speed_3mph"], "speed_3mph", len_history=5, min_distance=3.0, speed=0.8),
             "green": GreenLight(label2id["green"], "green"),
             "red": RedLight(label2id["red"], "red"),
         }
@@ -240,8 +272,8 @@ class PIDcontroller(Node):
                 # Keep driving with the last known steering angle unless the line is lost for self.max_out consecutive frames
                 ackermann_msg = to_ackermann(self.speed, self.last_steering_angle, timestamp_unix)
                 # Check for reaction to stop sign, prevents publishing ackermann command with speed > 0 during a stop
-                # if self.about_to_stop:
-                    # return
+                if self.about_to_stop:
+                    return
                 self.publisher.publish(ackermann_msg) # keep same speed (and steering)
                 self.get_logger().info("in waypoint_callback, keep driving with last known info")  # print debugging
 

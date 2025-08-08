@@ -26,8 +26,6 @@ class Target():
     def update(self, position, node):
         self.position = position
 
-        # node.get_logger().info(f"in update for obj w id={self.id}, label={self.label}")  # print debugging
-
         # Update detection history based on current observation
         if np.isnan(position).any():
             # Object NOT detected this frame
@@ -36,7 +34,6 @@ class Target():
             # Object IS detected this frame
             self.history.append(True)
 
-        # TRYING THIS CHANGE - I like this change more bc has more debugging info
         # Trigger action if target is visible and in range and not yet reacted
         if self.visible and not self.has_reacted:
             # node.get_logger().info(f"target={self.label}, in update (target visible and not reacted)")  # print debugging
@@ -49,12 +46,6 @@ class Target():
                 except:
                     node.get_logger().info(f'target={self.label}, in update (NOT in range yet, BAD distance)') # print debugging
                 
-        # # # TRYING THIS CHANGE - I dont like this as much bc provides less debugging info
-        # # Trigger action if target is visible and not yet reacted and in range 
-        # if self.visible and not self.has_reacted and self.in_range:
-        #     node.get_logger().info(f"in update, about to react (target vis & not react & in_range), for target:{self}")
-        #     self.has_reacted = self.react(node)  # Pass node here
-
         # Reset if target is no longer visible
         elif not any(self.history) and self.has_reacted:
             # node.get_logger().info(f"in update (target not visible and has reacted) for target:{self}")  # print debugging
